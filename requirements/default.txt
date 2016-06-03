@@ -23,9 +23,9 @@ dennis==0.7 \
     --hash=sha256:fde267aeb03a8d49e3341e7f71a228c6748dce43b5c00f65581780d99b70b2d9
 
 # Web framework for Python projects of a certain age
-Django==1.8.12 \
-    --hash=sha256:9c60c4af02faffb6f1c2bc7c7a09169c59230fa06c30a552414b816ee79f0c2a \
-    --hash=sha256:b68fa73d537f8362d73fec1aa2b7a1e8572349b12942ac756ec1041b6b0e7113
+Django==1.8.13 \
+    --hash=sha256:dad5da0cd7f3cca7da3ac42a19abba30f5cc10fae4976e474051e7085b4e95d1 \
+    --hash=sha256:128e8bdc11c69ea90f778435d38126453d3bf283dbd28cf15a33aa8e52245df4
 
 # 3rd party logins like Github
 django-allauth==0.24.1 \
