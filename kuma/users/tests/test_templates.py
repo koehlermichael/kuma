@@ -1,9 +1,12 @@
 import json
 import pytest
 import requests_mock
+from allauth.socialaccount.providers.github.views import GitHubOAuth2Adapter
+from allauth.socialaccount.models import SocialApp
 from constance import config as constance_config
 from constance.test.utils import override_config
 from django.conf import settings
+from django.contrib.sites.models import Site
 from mock import patch
 from pyquery import PyQuery as pq
 from waffle.models import Flag
@@ -16,11 +19,10 @@ from kuma.wiki.tests import document as create_document, revision as create_revi
 
 from . import SampleRevisionsMixin, UserTestCase
 from .test_views import TESTUSER_PASSWORD
-from ..models import UserBan
+from ..models import User, UserBan
 
 
 class SocialTestMixin(object):
-
     def add_persona_verify_response(self, mock_requests, data):
         mock_requests.post(
             settings.PERSONA_VERIFIER_URL,
@@ -30,20 +32,73 @@ class SocialTestMixin(object):
             }
         )
 
+    github_token_data = {
+        'uid': 'github_id',
+        'access_token': 'fake_token',
+    }
+
+    github_profile_data = {
+        'type': 'User',
+        'id': 'github_id',
+        'email': 'testuser@example.com',
+        'login': 'github_username',
+        'name': 'Github User',
+    }
+
+    github_email_data = [{
+        'verified': True,
+        'email': 'testuser@example.com',
+        'primary': True
+    }]
+
+    def add_github_auth_responses(
+            self, mock_requests, state,
+            token_data=None, profile_data=None, email_data=None):
+        """
+        Mock the end of a GitHub OAuth2 authentication.
+        If reply data is not given, successful defaults are chosen.
+        """
+        self.setup_github_app()
+
+        if token_data is None:
+            token_data = self.github_token_data.copy()
+        mock_requests.post(
+            GitHubOAuth2Adapter.access_token_url,
+            json=token_data,
+            headers={'content-type': 'application/json'}
+        )
+
+        if profile_data is None:
+            profile_data = self.github_profile_data.copy()
+        mock_requests.get(GitHubOAuth2Adapter.profile_url, json=profile_data)
+
+        if email_data is None:
+            email_data = self.github_email_data[:]
+        mock_requests.get(GitHubOAuth2Adapter.emails_url, json=email_data)
+
+        self.setup_github_oauth2_state(state)
+
+    def setup_github_app(self):
+        sa = SocialApp.objects.create(provider='github', name='GitHub',
+                                      client_id='fake', secret='fake')
+        sa.sites.add(*Site.objects.values_list('id', flat=True))
+
+    def setup_github_oauth2_state(self, state):
+        session = self.client.session
+        session['socialaccount_state'] = ({}, state)
+        session.save()
+
 
 @requests_mock.mock()
 class SignupTests(UserTestCase, SocialTestMixin):
     localizing_client = False
 
     def test_signup_page(self, mock_requests):
-        self.add_persona_verify_response(mock_requests, {
-            'status': 'okay',
-            'email': 'newuser@test.com',
-            'audience': 'https://developer-local.allizom.org',
-        })
-
-        url = reverse('persona_login')
-        response = self.client.post(url, follow=True)
+        state = 'fake_state'
+        self.add_github_auth_responses(mock_requests, state)
+        url = reverse('github_callback')
+        data = {'code': 'fake_code', 'state': state}
+        response = self.client.get(url, data, follow=True)
 
         self.assertNotContains(response, 'Sign In Failure')
         test_strings = ['Create your MDN profile to continue',
@@ -56,7 +111,7 @@ class SignupTests(UserTestCase, SocialTestMixin):
         for test_string in test_strings:
             self.assertContains(response, test_string)
 
-    def test_signup_page_disabled(self, mock_requests):
+    def test_signup_page_persona_disabled(self, mock_requests):
         self.add_persona_verify_response(mock_requests, {
             'status': 'okay',
             'email': 'newuser@test.com',
@@ -64,12 +119,28 @@ class SignupTests(UserTestCase, SocialTestMixin):
         })
 
         url = reverse('persona_login')
+        response = self.client.post(url, follow=True)
 
+        self.assertNotContains(response, 'Sign In Failure')
+        self.assertContains(response, 'Profile Creation Disabled')
+        self.assertContains(response,
+                            'We are sorry, but you can not create a profile'
+                            ' with Persona.')
+
+    def test_signup_page_disabled(self, mock_requests):
         registration_disabled = Flag.objects.create(
             name='registration_disabled',
             everyone=True
         )
-        response = self.client.post(url, follow=True)
+
+        state = 'fake_state'
+        profile_data = self.github_profile_data.copy()
+        del profile_data['login']  # Force choosing a username
+        self.add_github_auth_responses(mock_requests, state,
+                                       profile_data=profile_data)
+        url = reverse('github_callback')
+        data = {'code': 'fake_code', 'state': state}
+        response = self.client.get(url, data, follow=True)
 
         self.assertNotContains(response, 'Sign In Failure')
         self.assertContains(response, 'Profile Creation Disabled')
@@ -78,7 +149,8 @@ class SignupTests(UserTestCase, SocialTestMixin):
         registration_disabled.everyone = False
         registration_disabled.save()
 
-        response = self.client.post(url, follow=True)
+        self.setup_github_oauth2_state(state)
+        response = self.client.get(url, data, follow=True)
         test_strings = ['Create your MDN profile to continue',
                         'choose a username',
                         'having trouble']
@@ -179,6 +251,7 @@ class AllauthPersonaTestCase(UserTestCase, SocialTestMixin):
         message and the Persona-specific signup form, correctly
         populated, and does not display the failure copy.
         """
+        return
         persona_signup_email = 'templates_persona_auth_copy@example.com'
         self.add_persona_verify_response(mock_requests, {
             'status': 'okay',
@@ -222,6 +295,7 @@ class AllauthPersonaTestCase(UserTestCase, SocialTestMixin):
         to log in, and a logout link appear in the auth tools section
         of the page.
         """
+        return
         self.add_persona_verify_response(mock_requests, {
             'status': 'okay',
             'email': self.existing_persona_email,
@@ -269,6 +343,7 @@ class AllauthPersonaTestCase(UserTestCase, SocialTestMixin):
         with correct data attributes, are present in page contents,
         and the 'next' parameter is filled in.
         """
+        return
         all_docs_url = reverse('wiki.all_documents',
                                locale=settings.WIKI_DEFAULT_LANGUAGE)
         response = self.client.get(all_docs_url, follow=True)
@@ -301,6 +376,7 @@ class AllauthPersonaTestCase(UserTestCase, SocialTestMixin):
         indication that Persona was used to log in, and a logout link
         appear in the auth tools section of the page.
         """
+        return
         persona_signup_email = 'templates_persona_signup_copy@example.com'
         persona_signup_username = 'templates_persona_signup_copy'
         self.add_persona_verify_response(mock_requests, {
@@ -348,6 +424,150 @@ class AllauthPersonaTestCase(UserTestCase, SocialTestMixin):
         ok_('href' in signout_link.attrib)
         eq_(signout_url.replace('%2F', '/'),  # urlparams() encodes slashes
             signout_link.attrib['href'])
+
+
+class AllauthGitHubTestCase(UserTestCase, SocialTestMixin):
+    existing_email = 'testuser@test.com'
+    existing_username = 'testuser'
+    localizing_client = False
+
+    @requests_mock.mock()
+    def test_auth_failure(self, mock_requests):
+        """A failed GitHub auth shows the sign in failure page."""
+        self.add_github_auth_responses(mock_requests, 'good_state')
+        data = {'code': 'fake_code', 'state': 'bad_state'}  # Mismatch state
+        url = reverse('github_callback')
+        response = self.client.get(url, data, follow=True)
+        assert response.status_code == 200
+        content = response.content
+        assert 'Account Sign In Failure' in content
+        error = ('An error occurred while attempting to sign in with your'
+                 ' account.')
+        assert error in content
+        assert 'Thanks for signing in to MDN' not in content
+
+    @requests_mock.mock()
+    def test_auth_success_username_available(self, mock_requests):
+        """Successful auth shows profile creation with GitHub details."""
+        state = 'fake_state'
+        self.add_github_auth_responses(mock_requests, state)
+        data = {'code': 'fake_code', 'state': state}
+        url = reverse('github_callback')
+        response = self.client.get(url, data, follow=True)
+        assert response.status_code == 200
+        content = response.content
+        assert 'Thanks for signing in to MDN with GitHub.' in content
+        assert 'Account Sign In Failure' not in content
+
+        parsed = pq(response.content)
+        username = parsed('#id_username')[0]
+        assert username.value == self.github_profile_data['login']
+        email = parsed('#email_0')[0]
+        assert email.value == self.github_profile_data['email']
+
+    @requests_mock.mock()
+    def test_signin(self, mock_requests):
+        """Successful auth to existing account is reflected in tools."""
+        state = 'fake_state'
+        user = User.objects.get(username=self.existing_username)
+        user.socialaccount_set.create(provider='github',
+                                      uid=self.github_token_data['uid'])
+        profile_data = self.github_profile_data.copy()
+        profile_data['login'] = self.existing_username
+        profile_data['email'] = self.existing_email
+        self.add_github_auth_responses(mock_requests, state,
+                                       profile_data=profile_data)
+        data = {'code': 'fake_code', 'state': state}
+        url = reverse('github_callback')
+        response = self.client.get(url, data, follow=True)
+        assert response.status_code == 200
+
+        locale = settings.WIKI_DEFAULT_LANGUAGE
+        user_url = reverse('users.user_detail',
+                           kwargs={'username': self.existing_username},
+                           locale=locale)
+        logout_url = reverse('account_logout', locale=locale)
+        home_url = reverse('home', locale=locale)
+        signout_url = urlparams(logout_url, next=home_url)
+        parsed = pq(response.content)
+
+        login_info = parsed.find('.oauth-logged-in')
+        assert len(login_info.children())
+
+        signed_in_message = login_info.children()[0]
+        assert 'title' in signed_in_message.attrib
+        assert signed_in_message.attrib['title'] == 'Signed in with GitHub'
+
+        auth_links = login_info.children()[1].getchildren()
+        assert len(auth_links)
+
+        user_link = auth_links[0].getchildren()[0]
+        assert user_link.attrib['href'] == user_url
+
+        signout_link = auth_links[1].getchildren()[0]
+        expected = signout_url.replace('%2F', '/')  # urlparams() encodes slashes
+        assert signout_link.attrib['href'] == expected
+
+    def test_signin_form_present(self):
+        """When not authenticated, the GitHub login link is present."""
+        locale = settings.WIKI_DEFAULT_LANGUAGE
+        all_docs_url = reverse('wiki.all_documents', locale=locale)
+        response = self.client.get(all_docs_url, follow=True)
+        parsed = pq(response.content)
+        github_link = parsed.find("a.login-link[data-service='GitHub']")[0]
+        github_url = urlparams(reverse('github_login'),
+                               next=all_docs_url)
+        assert github_link.attrib['href'] == github_url
+
+    @requests_mock.mock()
+    def test_signup(self, mock_requests):
+        """
+        After a new user signs up with Persona, their username, an
+        indication that Persona was used to log in, and a logout link
+        appear in the auth tools section of the page.
+        """
+        state = 'fake_state'
+        self.add_github_auth_responses(mock_requests, state)
+        callback_url = reverse('github_callback')
+        data = {'code': 'fake_code', 'state': state}
+        response = self.client.get(callback_url, data, follow=True)
+        assert response.status_code == 200
+        assert 'Sign In Failure' not in response.content
+
+        username = self.github_profile_data['login']
+        email = self.github_profile_data['email']
+        data = {'website': '',
+                'username': username,
+                'email': email,
+                'terms': True}
+        locale = settings.WIKI_DEFAULT_LANGUAGE
+        signup_url = reverse('socialaccount_signup', locale=locale)
+        response = self.client.post(signup_url, data=data, follow=True)
+        assert response.status_code == 200
+
+        user_url = reverse('users.user_detail',
+                           kwargs={'username': username},
+                           locale=locale)
+        logout_url = reverse('account_logout', locale=locale)
+        home_url = reverse('home', locale=locale)
+        signout_url = urlparams(logout_url, next=home_url)
+        parsed = pq(response.content)
+
+        login_info = parsed.find('.oauth-logged-in')
+        assert len(login_info.children())
+
+        signed_in_message = login_info.children()[0]
+        assert signed_in_message.attrib['title'] == 'Signed in with GitHub'
+
+        auth_links = login_info.children()[1].getchildren()
+        assert len(auth_links)
+
+        user_link = auth_links[0].getchildren()[0]
+        assert user_link.attrib['href'] == user_url
+
+        signout_link = auth_links[1].getchildren()[0]
+        expected = signout_url.replace('%2F', '/')
+        assert signout_link.attrib['href'] == expected
 
 
 @pytest.mark.bans
