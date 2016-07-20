@@ -19,22 +19,24 @@ from .test_views import TESTUSER_PASSWORD
 from ..models import UserBan
 
 
-def add_persona_verify_response(mock_requests, data):
-    mock_requests.post(
-        settings.PERSONA_VERIFIER_URL,
-        json=data,
-        headers={
-            'content_type': 'application/json',
-        }
-    )
+class SocialTestMixin(object):
+
+    def add_persona_verify_response(self, mock_requests, data):
+        mock_requests.post(
+            settings.PERSONA_VERIFIER_URL,
+            json=data,
+            headers={
+                'content_type': 'application/json',
+            }
+        )
 
 
 @requests_mock.mock()
-class SignupTests(UserTestCase):
+class SignupTests(UserTestCase, SocialTestMixin):
     localizing_client = False
 
     def test_signup_page(self, mock_requests):
-        add_persona_verify_response(mock_requests, {
+        self.add_persona_verify_response(mock_requests, {
             'status': 'okay',
             'email': 'newuser@test.com',
             'audience': 'https://developer-local.allizom.org',
@@ -55,7 +57,7 @@ class SignupTests(UserTestCase):
             self.assertContains(response, test_string)
 
     def test_signup_page_disabled(self, mock_requests):
-        add_persona_verify_response(mock_requests, {
+        self.add_persona_verify_response(mock_requests, {
             'status': 'okay',
             'email': 'newuser@test.com',
             'audience': 'https://developer-local.allizom.org',
@@ -137,7 +139,7 @@ class SocialAccountConnectionsTests(UserTestCase):
             self.assertContains(response, test_string)
 
 
-class AllauthPersonaTestCase(UserTestCase):
+class AllauthPersonaTestCase(UserTestCase, SocialTestMixin):
     existing_persona_email = 'testuser@test.com'
     existing_persona_username = 'testuser'
     localizing_client = False
@@ -149,7 +151,7 @@ class AllauthPersonaTestCase(UserTestCase):
         failure copy, and does not contain success messages or a form
         to choose a username.
         """
-        add_persona_verify_response(mock_requests, {
+        self.add_persona_verify_response(mock_requests, {
             'status': 'failure',
             'reason': 'this email address has been naughty'
         })
@@ -178,7 +180,7 @@ class AllauthPersonaTestCase(UserTestCase):
         populated, and does not display the failure copy.
         """
         persona_signup_email = 'templates_persona_auth_copy@example.com'
-        add_persona_verify_response(mock_requests, {
+        self.add_persona_verify_response(mock_requests, {
             'status': 'okay',
             'email': persona_signup_email,
         })
@@ -220,7 +222,7 @@ class AllauthPersonaTestCase(UserTestCase):
         to log in, and a logout link appear in the auth tools section
         of the page.
         """
-        add_persona_verify_response(mock_requests, {
+        self.add_persona_verify_response(mock_requests, {
             'status': 'okay',
             'email': self.existing_persona_email,
         })
@@ -301,7 +303,7 @@ class AllauthPersonaTestCase(UserTestCase):
         """
         persona_signup_email = 'templates_persona_signup_copy@example.com'
         persona_signup_username = 'templates_persona_signup_copy'
-        add_persona_verify_response(mock_requests, {
+        self.add_persona_verify_response(mock_requests, {
             'status': 'okay',
             'email': persona_signup_email,
         })
